@@ -62,36 +62,94 @@ bayArea_lines = stplanr::od2line(flow = bayArea_od, zones = bayArea_zones)
 #plot(bayArea_lines["all"], lwd = bayArea_lines$all/250, add = TRUE)
 
 
-# Assume hilliness is zero for now
-bayArea_lines$hilliness = 0
+## Filter data to more than zero bicycle trips
+#bayArea_lines <- bayArea_lines[bayArea_lines$bicycle > 0, ]
+
+# Estimate distance
+bayArea_lines$length     = as.numeric(sf::st_length(bayArea_lines))
+bayArea_lines$av_incline = 0.
+
+# Filter data to only length < 10000m
+bayArea_lines  <- bayArea_lines[bayArea_lines$length < 10000, ]
+
+# Select only part of the data
+bayArea_lines <- bayArea_lines[1:10000,]
+
+# Compute length and av_incline of routes
+mytoken <- readLines("~/.cyclestreets/api-key")
+Sys.setenv(CYCLESTREET = mytoken)
+
+bayArea_routes <- stplanr::line2route(bayArea_lines, route_fun = route_cyclestreets, plan = "fastest")
 
 # Compute distance
-bayArea_lines$distance = as.numeric(sf::st_length(bayArea_lines))
+bayArea_lines$length     <- bayArea_routes$length
+bayArea_lines$av_incline <- bayArea_routes$av_incline
 
-# Filter data to only distance < 30000
-bayArea_lines <- bayArea_lines[bayArea_lines$distance < 30000, ]
 
+# Filter NA
+bayArea_lines  <- bayArea_lines[complete.cases(bayArea_lines$length), ]
+bayArea_routes <- bayArea_routes[complete.cases(bayArea_routes$length), ]
+
+
+# Compute current propensity to cycle
+breaks <- seq(0.0 , 30000.0, by=500.0)
+labels <- seq(250 , 30000  , by=500  )
+pcycle <- seq(250 , 30000  , by=500  )
+
+bayArea_lines$bins <- cut(bayArea_lines$length, breaks=breaks, labels=labels)
+
+for(i in 1:length(labels))
+{
+    pcycle[i] <- with(bayArea_lines, sum(bicycle[bins==labels[i]], na.rm = TRUE))/with(bayArea_lines, sum(all[bins==labels[i]], na.rm = TRUE))
+}
 
 # Compute uptake
-bayArea_lines$godutch_pcycle = uptake_pct_godutch(distance = bayArea_lines$distance, gradient = 0)
+bayArea_lines$godutch_pcycle = uptake_pct_godutch(bayArea_lines$length, bayArea_lines$av_incline)
 
 # Compute correlation between current and potential levels of cycling. 
 cor(x = bayArea_lines$bicycle, y = bayArea_lines$godutch_pcycle)
 
+# Plot propensity to cycle in Bay Area vs the Netherlands     
+#plot(x = bayArea_lines$bicycle, y = bayArea_lines$godutch_pcycle)
+plot(x = bayArea_lines$length, y = bayArea_lines$godutch_pcycle)
+points(x = labels, y = pcycle)
 
-## Plot data
-##plot(x = bayArea_lines$bicycle, y = bayArea_lines$godutch_pcycle)
-#plot(x = bayArea_lines$distance, y = bayArea_lines$godutch_pcycle, ylim = c(0, 1))
+
+n_lines = 1000
+for (i in 1:ceiling(nrow(bayArea_lines)/n_lines))
+{
+    i_0 = (i-1)*n_lines+1
+    i_1 = i    *n_lines
+
+    if (i_1 > nrow(bayArea_lines))
+    {
+        i_1 = nrow(bayArea_lines)
+    }
+
+    cat(i_0, i_1, nrow(bayArea_lines), "\n")
+
+    routes = sf::st_sf(
+        cbind(sf::st_drop_geometry(bayArea_routes[i_0:i_1,]),
+        sf::st_drop_geometry(bayArea_lines[i_0:i_1,])),
+        geometry = bayArea_routes[i_0:i_1,]$geometry
+    )
+
+    routes$godutch_slc = round(routes$godutch_pcycle * routes$all)
+
+    rnet0 = stplanr::overline2(routes, "godutch_slc")
+
+    if (i == 1)
+    {
+        rnet = rnet0
+    }
+    else
+    {
+        rnet = rbind(rnet, rnet0)
+    }
+}
+
+rnet = stplanr::overline2(rnet, "godutch_slc")
 
 
-##mytoken <- readLines("~/Dropbox/dotfiles/cyclestreets-api-key-rl") Sys.setenv(CYCLESTREETS = mytoken)
-##
-##bayArea_routes_cs = stplanr::line2route(bayArea_lines)
-#
-#
-### Filter data to only bicycle > 15
-##bayArea_lines <- bayArea_lines[bayArea_lines$bicycle > 15, ]
-##
-### Plot data
-##plot(bayArea_zones$geometry, lwd=0.05)
-##plot(bayArea_lines["bicycle"], lwd = bayArea_lines$bicycle/100, add = TRUE)
+# Plot density map of routes
+plot(rnet, lwd = log(rnet$godutch_slc / mean(rnet$godutch_slc)))
